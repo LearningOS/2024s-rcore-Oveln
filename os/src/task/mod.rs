@@ -14,9 +14,12 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use core::usize;
+
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -51,13 +54,11 @@ lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
         let num_app = get_num_app();
-        let mut tasks = [TaskControlBlock {
-            task_cx: TaskContext::zero_init(),
-            task_status: TaskStatus::UnInit,
-        }; MAX_APP_NUM];
+        let mut tasks = [TaskControlBlock {task_cx:TaskContext::zero_init(),task_status:TaskStatus::UnInit, syscall_info: [0;MAX_SYSCALL_NUM], start_time: 0 }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
+            task.start_time = get_time();
         }
         TaskManager {
             num_app,
@@ -135,6 +136,28 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn get_current_task_status(&self) -> TaskStatus {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].task_status
+    }
+
+    fn get_current_task_start_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].start_time
+    }
+
+    fn add_current_task_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].syscall_info[syscall_id] += 1;
+    }
+
+    fn get_current_task_syscall_info(&self) -> [u32;MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let syscall_info = inner.tasks[inner.current_task].syscall_info.clone();
+        syscall_info
+    }
 }
 
 /// Run the first task in task list.
@@ -168,4 +191,24 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Get current task status
+pub fn get_current_task_status() -> TaskStatus {
+    TASK_MANAGER.get_current_task_status()
+}
+
+/// Get current task start time
+pub fn get_current_task_start_time() -> usize {
+    TASK_MANAGER.get_current_task_start_time()
+}
+
+/// Add current task syscall count
+pub fn add_current_task_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.add_current_task_syscall_count(syscall_id)
+}
+
+/// Get current task syscall info
+pub fn get_current_task_syscall_info() -> [u32;MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_current_task_syscall_info()
 }
