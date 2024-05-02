@@ -133,15 +133,19 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     };
     let len = size_of::<TimeVal>();
     let _ts = translated_byte_buffer(current_user_token(), _ts as usize as *const u8, len);
-    let tv_ptr = &tv as *const TimeVal as *const u8;
-    for i in _ts {
-        let src = unsafe { from_raw_parts(tv_ptr, i.len()) };
-        i.copy_from_slice(src);
-        unsafe {
-            let _ = tv_ptr.add(i.len());
+    if let Ok(_ts) = _ts {
+        let tv_ptr = &tv as *const TimeVal as *const u8;
+        for i in _ts {
+            let src = unsafe { from_raw_parts(tv_ptr, i.len()) };
+            i.copy_from_slice(src);
+            unsafe {
+                let _ = tv_ptr.add(i.len());
+            }
         }
+        0
+    } else {
+        -1
     }
-    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
