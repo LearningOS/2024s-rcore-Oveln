@@ -67,6 +67,7 @@ impl PageTableEntry {
 /// page table structure
 pub struct PageTable {
     root_ppn: PhysPageNum,
+    /// only include page table frames
     frames: Vec<FrameTracker>,
 }
 
