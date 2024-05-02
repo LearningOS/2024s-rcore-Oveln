@@ -244,6 +244,26 @@ where
     pub fn get_end(&self) -> T {
         self.r
     }
+    /// check if two ranges intersect
+    pub fn is_intersect_with(&self, other: &Self) -> bool {
+        (self.l < other.r && self.r > other.l) || (self.l > other.r && self.r < other.l)
+    }
+    /// contain a page number
+    pub fn contain_with(&self, other: &Self) -> bool {
+        self.l <= other.l && self.r >= other.r
+    }
+    /// check if a page number is in the range
+    pub fn contain(&self, p: &T) -> bool {
+        self.l <= *p && self.r > *p
+    }
+    pub fn intersect_with(&self, other: &Self) -> Option<SimpleRange<T>> {
+        if !self.is_intersect_with(other) {
+            return None;
+        }
+        let l = if self.l > other.l { self.l } else { other.l };
+        let r = if self.r < other.r { self.r } else { other.r };
+        Some(SimpleRange::new(l, r))
+    }
 }
 impl<T> IntoIterator for SimpleRange<T>
 where

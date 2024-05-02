@@ -1,4 +1,5 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
+use super::err::{TranslateError, TranslateResult};
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::string::String;
 use alloc::vec;
@@ -159,7 +160,7 @@ impl PageTable {
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
-pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> TranslateResult<Vec<&'static mut [u8]>> {
     let page_table = PageTable::from_token(token);
     let mut start = ptr as usize;
     let end = start + len;
@@ -167,7 +168,7 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
-        let ppn = page_table.translate(vpn).unwrap().ppn();
+        let ppn = page_table.translate(vpn).ok_or(TranslateError::NotMapped)?.ppn();
         vpn.step();
         let mut end_va: VirtAddr = vpn.into();
         end_va = end_va.min(VirtAddr::from(end));
@@ -178,7 +179,7 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         }
         start = end_va.into();
     }
-    v
+    Ok(v)
 }
 
 /// Translate&Copy a ptr[u8] array end with `\0` to a `String` Vec through page table

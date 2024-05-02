@@ -7,6 +7,7 @@
 //! Every task or process has a memory_set to control its virtual memory.
 
 mod address;
+mod err;
 mod frame_allocator;
 mod heap_allocator;
 mod memory_set;
@@ -14,6 +15,7 @@ mod page_table;
 
 use address::VPNRange;
 pub use address::{PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+pub use err::{MapResult, UnMapResult};
 pub use frame_allocator::{frame_alloc, frame_dealloc, FrameTracker};
 pub use memory_set::remap_test;
 pub use memory_set::{kernel_token, MapPermission, MemorySet, KERNEL_SPACE};
