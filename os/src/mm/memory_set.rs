@@ -13,6 +13,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::arch::asm;
+use core::mem::take;
 use lazy_static::*;
 use riscv::register::satp;
 
@@ -94,26 +95,33 @@ impl MemorySet {
             .areas
             .iter()
             .map(|area| {
-                area.vpn_range
-                    .intersect_with(&vpn_range)
-                    .into_iter()
-                    .count()
+                let range = area.vpn_range.intersect_with(&vpn_range);
+                if let Some(range) = range {
+                    range.into_iter().count()
+                } else {
+                    0
+                }
             })
             .sum::<usize>();
         if count != vpn_range.into_iter().count() {
             return Err(UnMapError::UnMapped);
         }
-        let mut new_areas = Vec::new();
-        for area in &mut self.areas {
+        let areas = take(&mut self.areas);
+        for area in areas {
             if area.vpn_range.is_intersect_with(&vpn_range) {
-                let area_r = area.split((vpn_range.get_end().0 + 1).into()).unwrap();
-                let mut area_m = area.split(vpn_range.get_start()).unwrap();
-                area_m.unmap(&mut self.page_table);
-                new_areas.push(area_r);
+                let (area_l, area_r) = area.split((vpn_range.get_end().0 + 1).into());
+                let (area_l, area_m) = area_l.unwrap().split(vpn_range.get_start());
+                if let Some(mut area_m) = area_m {
+                    area_m.unmap(&mut self.page_table);
+                }
+                if let Some(area_r) = area_r {
+                    self.areas.push(area_r);
+                }
+                if let Some(area_l) = area_l {
+                    self.areas.push(area_l);
+                }
             }
         }
-        // push new_areas into areas
-        self.areas.extend(new_areas);
         Ok(())
     }
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> MapResult<()> {
@@ -436,9 +444,15 @@ impl MapArea {
     }
 
     /// split the area at the given vpn
-    pub fn split(&mut self, vpn: VirtPageNum) -> Option<Self> {
+    pub fn split(mut self, vpn: VirtPageNum) -> (Option<Self>, Option<Self>) {
         if !self.vpn_range.contain(&vpn) {
-            return None;
+            return (Some(self), None);
+        }
+        if vpn == self.vpn_range.get_start() {
+            return (None, Some(self));
+        }
+        if vpn == self.vpn_range.get_end() {
+            return (Some(self), None);
         }
         let new_end = self.vpn_range.get_end();
         let new_area = Self {
@@ -447,8 +461,12 @@ impl MapArea {
             map_type: self.map_type,
             map_perm: self.map_perm,
         };
-        self.vpn_range = VPNRange::new(self.vpn_range.get_start(), (vpn.0 - 1).into());
-        Some(new_area)
+        if self.vpn_range.get_start() != (vpn.0 - 1).into() {
+            self.vpn_range = VPNRange::new(self.vpn_range.get_start(), (vpn.0 - 1).into());
+        } else {
+            self.vpn_range = VPNRange::new(0.into(), 0.into())
+        }
+        (Some(self), Some(new_area))
     }
 }
 

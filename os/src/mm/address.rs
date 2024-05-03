@@ -239,10 +239,13 @@ where
     pub fn contain(&self, p: &T) -> bool {
         self.l <= *p && self.r > *p
     }
-    pub fn intersect_with(&self, other: &Self) -> SimpleRange<T> {
+    pub fn intersect_with(&self, other: &Self) -> Option<SimpleRange<T>> {
+        if !self.is_intersect_with(other) {
+            return None;
+        }
         let l = if self.l > other.l { self.l } else { other.l };
         let r = if self.r < other.r { self.r } else { other.r };
-        SimpleRange::new(l, r)
+        Some(SimpleRange::new(l, r))
     }
 }
 impl<T> IntoIterator for SimpleRange<T>
