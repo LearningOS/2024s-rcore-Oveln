@@ -1,5 +1,6 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
 
+use super::err::{MapError, MapResult, UnMapError, UnMapResult};
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
@@ -51,24 +52,77 @@ impl MemorySet {
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
+    /// Check conflicts
+    pub fn check_conflicts(&self, vpn_range: VPNRange) -> bool {
+        for area in &self.areas {
+            if area.vpn_range.is_intersect_with(&vpn_range) {
+                return true;
+            }
+        }
+        false
+    }
     /// Assume that no conflicts.
     pub fn insert_framed_area(
         &mut self,
         start_va: VirtAddr,
         end_va: VirtAddr,
         permission: MapPermission,
-    ) {
+    ) -> MapResult<()> {
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
-        );
+        )?;
+        Ok(())
     }
-    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+    /// map
+    pub fn map(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission,
+    ) -> MapResult<()> {
+        let vpn_range = VPNRange::new(start_va.floor(), end_va.ceil());
+        if self.check_conflicts(vpn_range) {
+            return Err(MapError::Mapped);
+        }
+        self.insert_framed_area(start_va, end_va, permission)
+    }
+    /// unmap
+    pub fn unmap(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> UnMapResult<()> {
+        let vpn_range = VPNRange::new(start_va.floor(), end_va.ceil());
+        let count = self
+            .areas
+            .iter()
+            .map(|area| {
+                area.vpn_range
+                    .intersect_with(&vpn_range)
+                    .into_iter()
+                    .count()
+            })
+            .sum::<usize>();
+        if count != vpn_range.into_iter().count() {
+            return Err(UnMapError::UnMapped);
+        }
+        let mut new_areas = Vec::new();
+        for area in &mut self.areas {
+            if area.vpn_range.is_intersect_with(&vpn_range) {
+                let area_r = area.split((vpn_range.get_end().0 + 1).into()).unwrap();
+                let mut area_m = area.split(vpn_range.get_start()).unwrap();
+                area_m.unmap(&mut self.page_table);
+                new_areas.push(area_r);
+            }
+        }
+        // push new_areas into areas
+        self.areas.extend(new_areas);
+        Ok(())
+    }
+    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> MapResult<()> {
+        map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
+        Ok(())
     }
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
@@ -92,55 +146,65 @@ impl MemorySet {
             sbss_with_stack as usize, ebss as usize
         );
         info!("mapping .text section");
-        memory_set.push(
-            MapArea::new(
-                (stext as usize).into(),
-                (etext as usize).into(),
-                MapType::Identical,
-                MapPermission::R | MapPermission::X,
-            ),
-            None,
-        );
+        memory_set
+            .push(
+                MapArea::new(
+                    (stext as usize).into(),
+                    (etext as usize).into(),
+                    MapType::Identical,
+                    MapPermission::R | MapPermission::X,
+                ),
+                None,
+            )
+            .unwrap();
         info!("mapping .rodata section");
-        memory_set.push(
-            MapArea::new(
-                (srodata as usize).into(),
-                (erodata as usize).into(),
-                MapType::Identical,
-                MapPermission::R,
-            ),
-            None,
-        );
+        memory_set
+            .push(
+                MapArea::new(
+                    (srodata as usize).into(),
+                    (erodata as usize).into(),
+                    MapType::Identical,
+                    MapPermission::R,
+                ),
+                None,
+            )
+            .unwrap();
         info!("mapping .data section");
-        memory_set.push(
-            MapArea::new(
-                (sdata as usize).into(),
-                (edata as usize).into(),
-                MapType::Identical,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        );
+        memory_set
+            .push(
+                MapArea::new(
+                    (sdata as usize).into(),
+                    (edata as usize).into(),
+                    MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .unwrap();
         info!("mapping .bss section");
-        memory_set.push(
-            MapArea::new(
-                (sbss_with_stack as usize).into(),
-                (ebss as usize).into(),
-                MapType::Identical,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        );
+        memory_set
+            .push(
+                MapArea::new(
+                    (sbss_with_stack as usize).into(),
+                    (ebss as usize).into(),
+                    MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .unwrap();
         info!("mapping physical memory");
-        memory_set.push(
-            MapArea::new(
-                (ekernel as usize).into(),
-                MEMORY_END.into(),
-                MapType::Identical,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        );
+        memory_set
+            .push(
+                MapArea::new(
+                    (ekernel as usize).into(),
+                    MEMORY_END.into(),
+                    MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .unwrap();
         memory_set
     }
     /// Include sections in elf and trampoline and TrapContext and user stack,
@@ -174,10 +238,15 @@ impl MemorySet {
                 }
                 let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
                 max_end_vpn = map_area.vpn_range.get_end();
-                memory_set.push(
-                    map_area,
-                    Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
-                );
+                memory_set
+                    .push(
+                        map_area,
+                        Some(
+                            &elf.input
+                                [ph.offset() as usize..(ph.offset() + ph.file_size()) as usize],
+                        ),
+                    )
+                    .unwrap();
             }
         }
         // map user stack with U flags
@@ -186,35 +255,41 @@ impl MemorySet {
         // guard page
         user_stack_bottom += PAGE_SIZE;
         let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
-        memory_set.push(
-            MapArea::new(
-                user_stack_bottom.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-            ),
-            None,
-        );
+        memory_set
+            .push(
+                MapArea::new(
+                    user_stack_bottom.into(),
+                    user_stack_top.into(),
+                    MapType::Framed,
+                    MapPermission::R | MapPermission::W | MapPermission::U,
+                ),
+                None,
+            )
+            .unwrap();
         // used in sbrk
-        memory_set.push(
-            MapArea::new(
-                user_stack_top.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-            ),
-            None,
-        );
+        memory_set
+            .push(
+                MapArea::new(
+                    user_stack_top.into(),
+                    user_stack_top.into(),
+                    MapType::Framed,
+                    MapPermission::R | MapPermission::W | MapPermission::U,
+                ),
+                None,
+            )
+            .unwrap();
         // map TrapContext
-        memory_set.push(
-            MapArea::new(
-                TRAP_CONTEXT_BASE.into(),
-                TRAMPOLINE.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        );
+        memory_set
+            .push(
+                MapArea::new(
+                    TRAP_CONTEXT_BASE.into(),
+                    TRAMPOLINE.into(),
+                    MapType::Framed,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .unwrap();
         (
             memory_set,
             user_stack_top,
@@ -287,20 +362,21 @@ impl MapArea {
             map_perm,
         }
     }
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> MapResult<()> {
         let ppn: PhysPageNum;
         match self.map_type {
             MapType::Identical => {
                 ppn = PhysPageNum(vpn.0);
             }
             MapType::Framed => {
-                let frame = frame_alloc().unwrap();
+                let frame = frame_alloc().ok_or(MapError::NotEnoughMemory)?;
                 ppn = frame.ppn;
                 self.data_frames.insert(vpn, frame);
             }
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
         page_table.map(vpn, ppn, pte_flags);
+        Ok(())
     }
     #[allow(unused)]
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -309,10 +385,11 @@ impl MapArea {
         }
         page_table.unmap(vpn);
     }
-    pub fn map(&mut self, page_table: &mut PageTable) {
+    pub fn map(&mut self, page_table: &mut PageTable) -> MapResult<()> {
         for vpn in self.vpn_range {
-            self.map_one(page_table, vpn);
+            self.map_one(page_table, vpn)?;
         }
+        Ok(())
     }
     #[allow(unused)]
     pub fn unmap(&mut self, page_table: &mut PageTable) {
@@ -328,11 +405,12 @@ impl MapArea {
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
     #[allow(unused)]
-    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
+    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) -> MapResult<()> {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
-            self.map_one(page_table, vpn)
+            self.map_one(page_table, vpn)?
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
+        Ok(())
     }
     /// data: start-aligned but maybe with shorter length
     /// assume that all frames were cleared before
@@ -355,6 +433,22 @@ impl MapArea {
             }
             current_vpn.step();
         }
+    }
+
+    /// split the area at the given vpn
+    pub fn split(&mut self, vpn: VirtPageNum) -> Option<Self> {
+        if !self.vpn_range.contain(&vpn) {
+            return None;
+        }
+        let new_end = self.vpn_range.get_end();
+        let new_area = Self {
+            vpn_range: VPNRange::new(vpn, new_end),
+            data_frames: self.data_frames.split_off(&vpn).into_iter().collect(),
+            map_type: self.map_type,
+            map_perm: self.map_perm,
+        };
+        self.vpn_range = VPNRange::new(self.vpn_range.get_start(), (vpn.0 - 1).into());
+        Some(new_area)
     }
 }
 

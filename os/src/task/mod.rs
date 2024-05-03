@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, MapResult, UnMapResult, VirtAddr};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -201,4 +202,18 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Insert framed area into current task
+pub fn map_current_task(start: VirtAddr, end: VirtAddr, perm: MapPermission) -> MapResult<()> {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let cur = inner.current_task;
+    inner.tasks[cur].memory_set.map(start, end,perm)
+}
+
+/// unmap
+pub fn unmap_current_task(start: VirtAddr, end: VirtAddr) -> UnMapResult<()> {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let cur = inner.current_task;
+    inner.tasks[cur].memory_set.unmap(start, end)
 }

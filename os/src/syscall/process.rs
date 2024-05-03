@@ -3,10 +3,9 @@ use core::{mem::size_of, slice::from_raw_parts};
 
 use crate::{
     config::MAX_SYSCALL_NUM,
-    mm::translated_byte_buffer,
+    mm::{translated_byte_buffer, MapPermission},
     task::{
-        change_program_brk, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
+        change_program_brk, current_user_token, exit_current_and_run_next, map_current_task, suspend_current_and_run_next, unmap_current_task, TaskStatus
     },
     timer::get_time_us,
 };
@@ -81,13 +80,42 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 // YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+    let mut perm = MapPermission::U;
+    if _start & 0xfff != 0 {
+        return -1;
+    }
+    if _port & 0b111 == 0 || _port & !0b111 != 0 {
+        return -1;
+    }
+    if _port & 0b1 != 0 {
+        perm = perm | MapPermission::R;
+    }
+    if _port & 0b10 != 0 {
+        perm = perm | MapPermission::W;
+    }
+    if _port & 0b100 != 0 {
+        perm = perm | MapPermission::X;
+    }
+    let start = _start.into();
+    let end = (_start + _len).into();
+    
+    if let Ok(()) = map_current_task(start, end, perm) {
+        0
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+    let start = _start.into();
+    let end = (_start + _len).into();
+    if let Ok(()) = unmap_current_task(start, end) {
+        0
+    } else {
+        -1
+    }
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
