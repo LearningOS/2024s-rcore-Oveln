@@ -14,6 +14,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::mm::{MapPermission, MapResult, UnMapResult, VirtAddr};
 use crate::sync::UPSafeCell;
@@ -154,6 +155,22 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn get_current_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].syscall_times
+    }
+
+    fn add_current_syscall_time(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_times[syscall_id] += 1;
+    }
+
+    fn get_current_start_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].start_time
+    }
 }
 
 /// Run the first task in task list.
@@ -208,7 +225,7 @@ pub fn change_program_brk(size: i32) -> Option<usize> {
 pub fn map_current_task(start: VirtAddr, end: VirtAddr, perm: MapPermission) -> MapResult<()> {
     let mut inner = TASK_MANAGER.inner.exclusive_access();
     let cur = inner.current_task;
-    inner.tasks[cur].memory_set.map(start, end,perm)
+    inner.tasks[cur].memory_set.map(start, end, perm)
 }
 
 /// unmap
@@ -216,4 +233,19 @@ pub fn unmap_current_task(start: VirtAddr, end: VirtAddr) -> UnMapResult<()> {
     let mut inner = TASK_MANAGER.inner.exclusive_access();
     let cur = inner.current_task;
     inner.tasks[cur].memory_set.unmap(start, end)
+}
+
+/// Get the current 'Running' task's syscall times.
+pub fn current_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_current_syscall_times()
+}
+
+/// Add the current 'Running' task's syscall times.
+pub fn add_current_syscall_time(syscall_id: usize) {
+    TASK_MANAGER.add_current_syscall_time(syscall_id);
+}
+
+/// Get the current 'Running' task's start time.
+pub fn current_start_time() -> usize {
+    TASK_MANAGER.get_current_start_time()
 }
