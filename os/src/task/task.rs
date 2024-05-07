@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::config::{BIG_STRIDE, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
@@ -40,6 +40,33 @@ impl TaskControlBlock {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
     }
+    /// Get stride
+    pub fn get_stride(&self) -> usize {
+        let inner = self.inner_exclusive_access();
+        inner.stride
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct TaskPriority(
+    // 大于2的整数
+    usize,
+);
+
+impl TaskPriority {
+    pub fn get_priority(&self) -> usize {
+        self.0
+    }
+    pub fn set_priority(&mut self, priority: usize) {
+        assert!(priority > 2, "priority must be greater than 2");
+        self.0 = priority;
+    }
+}
+
+impl Default for TaskPriority {
+    fn default() -> Self {
+        TaskPriority(16)
+    }
 }
 
 pub struct TaskControlBlockInner {
@@ -77,7 +104,13 @@ pub struct TaskControlBlockInner {
     pub program_brk: usize,
 
     /// syscall times count
-    pub syscall_times: [u32; MAX_SYSCALL_NUM]
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Priority
+    pub priority: TaskPriority,
+
+    /// Pass
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -100,6 +133,16 @@ impl TaskControlBlockInner {
             self.fd_table.push(None);
             self.fd_table.len() - 1
         }
+    }
+    pub fn get_priority(&self) -> usize {
+        self.priority.get_priority()
+    }
+    pub fn set_priority(&mut self, priority: usize) {
+        self.priority.set_priority(priority);
+    }
+    /// passed
+    pub fn passed(&mut self) {
+        self.stride += BIG_STRIDE / self.priority.get_priority();
     }
 }
 
@@ -143,7 +186,9 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
-                    syscall_times: [0; MAX_SYSCALL_NUM]
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: TaskPriority::default(),
+                    stride: 0,
                 })
             },
         };
@@ -226,7 +271,9 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
-                    syscall_times: [0; MAX_SYSCALL_NUM]
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: parent_inner.priority,
+                    stride: 0,
                 })
             },
         });
