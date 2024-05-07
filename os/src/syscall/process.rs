@@ -1,11 +1,13 @@
+use core::{mem::size_of, slice::from_raw_parts};
+
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_ref, translated_refmut, translated_str},
     task::{
         current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
         suspend_current_and_run_next, SignalFlags, TaskStatus,
-    },
+    }, timer::get_time_us,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 
@@ -163,11 +165,22 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
+    let us = get_time_us();
+    let tv = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    let len = size_of::<TimeVal>();
+    let _ts = translated_byte_buffer(current_user_token(), _ts as usize as *const u8, len);
+    let tv_ptr = &tv as *const TimeVal as *const u8;
+    for i in _ts {
+        let src = unsafe { from_raw_parts(tv_ptr, i.len()) };
+        i.copy_from_slice(src);
+        unsafe {
+            let _ = tv_ptr.add(i.len());
+        }
+    }
+    0
 }
 
 /// task_info syscall
