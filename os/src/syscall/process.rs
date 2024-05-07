@@ -4,14 +4,14 @@ use core::{mem::size_of, slice::from_raw_parts};
 use alloc::sync::Arc;
 
 use crate::{
-    config::MAX_SYSCALL_NUM,
+    config::{CLOCK_FREQ, MAX_SYSCALL_NUM},
     loader::get_app_data_by_name,
     mm::{translated_byte_buffer, translated_refmut, translated_str},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next, TaskControlBlock, TaskStatus,
     },
-    timer::get_time_us,
+    timer::{get_time, get_time_us},
 };
 
 #[repr(C)]
@@ -149,10 +149,29 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_task_info",
         current_task().unwrap().pid.0
     );
-    -1
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    let ti = TaskInfo {
+        status: inner.task_status,
+        syscall_times: inner.syscall_times,
+        time: (get_time() - task.start_time) / (CLOCK_FREQ / 1000),
+    };
+    drop(inner);
+    drop(task);
+    let len = size_of::<TaskInfo>();
+    let _ti = translated_byte_buffer(current_user_token(), _ti as usize as *const u8, len);
+    let ti_ptr = &ti as *const TaskInfo as *const u8;
+    for i in _ti {
+        let src = unsafe { from_raw_parts(ti_ptr, i.len()) };
+        i.copy_from_slice(src);
+        unsafe {
+            let _ = ti_ptr.add(i.len());
+        }
+    }
+    0
 }
 
 /// YOUR JOB: Implement mmap.
