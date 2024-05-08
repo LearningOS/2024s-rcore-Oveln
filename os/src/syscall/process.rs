@@ -6,7 +6,7 @@ use alloc::sync::Arc;
 use crate::{
     config::{CLOCK_FREQ, MAX_SYSCALL_NUM},
     loader::get_app_data_by_name,
-    mm::{translated_byte_buffer, translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next, TaskControlBlock, TaskStatus,
@@ -167,24 +167,49 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     drop(task);
     let len = size_of::<TaskInfo>();
     let _ti = translated_byte_buffer(current_user_token(), _ti as usize as *const u8, len);
-    let ti_ptr = &ti as *const TaskInfo as *const u8;
-    for i in _ti {
-        let src = unsafe { from_raw_parts(ti_ptr, i.len()) };
-        i.copy_from_slice(src);
-        unsafe {
-            let _ = ti_ptr.add(i.len());
+    if let Ok(_ti) = _ti {
+        let ti_ptr = &ti as *const TaskInfo as *const u8;
+        for i in _ti {
+            let src = unsafe { from_raw_parts(ti_ptr, i.len()) };
+            i.copy_from_slice(src);
+            unsafe {
+                let _ = ti_ptr.add(i.len());
+            }
         }
+        0
+    } else {
+        -1
     }
-    0
 }
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel:pid[{}] sys_mmap", current_task().unwrap().pid.0);
+    let mut perm = MapPermission::U;
+    if _start & 0xfff != 0 {
+        return -1;
+    }
+    if _port & 0b111 == 0 || _port & !0b111 != 0 {
+        return -1;
+    }
+    if _port & 0b1 != 0 {
+        perm = perm | MapPermission::R;
+    }
+    if _port & 0b10 != 0 {
+        perm = perm | MapPermission::W;
+    }
+    if _port & 0b100 != 0 {
+        perm = perm | MapPermission::X;
+    }
+    let start = _start.into();
+    let end = (_start + _len).into();
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if inner.memory_set.map(start, end, perm).is_ok() {
+        0
+    } else {
+        -1
+    }
 }
 
 /// YOUR JOB: Implement munmap.
@@ -193,7 +218,18 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
         "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if _start & 0xfff != 0 {
+        return -1;
+    }
+    let start = _start.into();
+    let end = (_start + _len).into();
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if inner.memory_set.unmap(start, end).is_ok() {
+        0
+    } else {
+        -1
+    }
 }
 
 /// change data segment size
@@ -240,8 +276,11 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         current_task().unwrap().pid.0,
         _prio
     );
-    if _prio >1 {
-        current_task().unwrap().inner_exclusive_access().set_priority(_prio as usize);
+    if _prio > 1 {
+        current_task()
+            .unwrap()
+            .inner_exclusive_access()
+            .set_priority(_prio as usize);
         _prio
     } else {
         -1
