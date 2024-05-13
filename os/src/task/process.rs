@@ -49,9 +49,106 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// deadlock check
+    pub deadlock_check: bool,
+    /// resourse available
+    /// res_available[res_type_id][res_id]
+    pub res_available: Vec<Vec<usize>>,
+    /// resourse alloction
+    /// res_alloction[res_type_id][tid][res_id]
+    pub res_alloction: Vec<Vec<Vec<usize>>>,
+    /// resourse need
+    /// res_need[res_type_id][tid][res_id]
+    pub res_need: Vec<Vec<Vec<usize>>>,
+}
+
+/// ResourceType
+pub enum ResourceType {
+    /// Mutex
+    Mutex,
+    /// Semaphore
+    Semaphore,
+}
+
+/// GetResourseResult
+pub enum GetResourseResult {
+    /// Dead
+    Dead,
+    /// Ok
+    Ok,
+    /// Wait
+    Wait,
 }
 
 impl ProcessControlBlockInner {
+    fn detect_deadlock(&self, root_tid: usize, now_tid: usize, res_type: usize) -> bool {
+        let mut ret = true;
+        if let Some((need_res_id, _)) = self.res_need[res_type][now_tid]
+            .iter()
+            .enumerate()
+            .find(|(_, need)| **need > 0)
+        {
+            if self.res_available[res_type][need_res_id] > 0 {
+                return false;
+            }
+            for tid in self.res_alloction[res_type]
+                .iter()
+                .enumerate()
+                .filter(|(tid, res_alloc)| res_alloc[need_res_id] > 0 && *tid != root_tid)
+                .map(|x| x.0)
+                .collect::<Vec<usize>>()
+            {
+                ret &= self.detect_deadlock(root_tid, tid,  res_type);
+            }
+        } else {
+            ret = false;
+        }
+        ret
+    }
+    pub fn get_res(
+        &mut self,
+        tid: usize,
+        res_type: ResourceType,
+        res_id: usize,
+    ) -> GetResourseResult {
+        // info!("get_res: {} {}",tid,res_id);
+        let res_type_id = match res_type {
+            ResourceType::Mutex => 0,
+            ResourceType::Semaphore => 1,
+        };
+        let available: &mut Vec<usize> = self.res_available[res_type_id].as_mut();
+        let alloction: &mut Vec<Vec<usize>> = self.res_alloction[res_type_id].as_mut();
+        let need: &mut Vec<Vec<usize>> = self.res_need[res_type_id].as_mut();
+        if available[res_id] >= 1 {
+            need[tid][res_id] = 0;
+            available[res_id] -= 1;
+            alloction[tid][res_id] += 1;
+            GetResourseResult::Ok
+        } else {
+            need[tid][res_id] += 1;
+            if self.detect_deadlock(tid, res_id, res_type_id) {
+                self.res_need[res_type_id][tid][res_id] -= 1;
+                GetResourseResult::Dead
+            } else {
+                GetResourseResult::Wait
+            }
+        }
+    }
+    pub fn put_res(&mut self, tid: usize, res_type: ResourceType, res_id: usize) -> bool {
+        let res_type_id = match res_type {
+            ResourceType::Mutex => 0,
+            ResourceType::Semaphore => 1,
+        };
+        let available: &mut Vec<usize> = self.res_available[res_type_id].as_mut();
+        let alloction: &mut Vec<Vec<usize>> = self.res_alloction[res_type_id].as_mut();
+        if alloction[tid][res_id] > 0 {
+            alloction[tid][res_id] -= 1;
+            available[res_id] += 1;
+            true
+        } else {
+            false
+        }
+    }
     #[allow(unused)]
     /// get the address of app's page table
     pub fn get_user_token(&self) -> usize {
@@ -119,9 +216,21 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_check: false,
+                    res_alloction: Vec::new(),
+                    res_available: Vec::new(),
+                    res_need: Vec::new(),
                 })
             },
         });
+        for i in 0..2 {
+            let mut inner = process.inner_exclusive_access();
+            inner.res_available.push(Vec::new());
+            inner.res_alloction.push(Vec::new());
+            inner.res_alloction[i].push(Vec::new());
+            inner.res_need.push(Vec::new());
+            inner.res_need[i].push(Vec::new());
+        }
         // create a main thread, we should allocate ustack and trap_cx here
         let task = Arc::new(TaskControlBlock::new(
             Arc::clone(&process),
@@ -245,6 +354,10 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_check: false,
+                    res_alloction: Vec::new(),
+                    res_available: Vec::new(),
+                    res_need: Vec::new(),
                 })
             },
         });
@@ -267,6 +380,10 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+        child_inner.deadlock_check = parent.deadlock_check;
+        child_inner.res_alloction = parent.res_alloction.clone();
+        child_inner.res_available = parent.res_available.clone();
+        child_inner.res_need = parent.res_need.clone();
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
